@@ -173,6 +173,25 @@ class CorruptStoreTests(unittest.TestCase):
             with self.assertRaises(json.JSONDecodeError):
                 logger.record_event("second", {"i": 1})
 
+    def test_tampered_audit_entry_is_not_extended(self) -> None:
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "audit.jsonl"
+            logger = AuditLogger(path)
+            logger.record_event("first", {"i": 0})
+
+            entries = read_audit_entries(path)
+            entries[0]["event_type"] = "tampered"
+            path.write_text(
+                "\n".join(json.dumps(entry, sort_keys=True) for entry in entries)
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "entry_hash mismatch"):
+                logger.record_event("second", {"i": 1})
+
+            self.assertEqual(len(read_audit_entries(path)), 1)
+
 
 class BackwardCompatSequentialTests(unittest.TestCase):
     def test_sequential_one_use_allows_then_denies(self) -> None:
