@@ -73,8 +73,14 @@ def _build_gateway(
     pending = PendingApprovalStore(
         pending_path, audit_logger=audit_logger, notify=False
     )
+    # Mock no-TTY to ensure we get a pending request rather than instant denial.
+    from agent_sudo.approvals import ApprovalProvider
+
+    approvals = ApprovalProvider(stdin_is_tty=lambda: False)
+
     gateway = PermissionGateway(
         load_default_policy(),
+        approvals=approvals,
         audit_logger=audit_logger,
         delegation_store=store,
         pending_approval_store=pending,

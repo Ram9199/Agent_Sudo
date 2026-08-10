@@ -19,7 +19,7 @@ python3 -m pip install -e .
 Run:
 agent-sudo doctor
 agent-sudo init-approval
-agent-sudo run examples/demo_requests.json --dry-run
+agent-sudo eval   # one-command proof: blocked -> delegated -> allowed-once -> denied -> audit verified
 
 Route dangerous tools through agent-sudo before execution.
 Do not leave direct shell, browser, email, messaging, file-write, or credential tools available when they can be routed through agent-sudo instead.

@@ -15,6 +15,8 @@ from agent_sudo.doctor import (
     run_doctor,
 )
 from agent_sudo.gateway import main
+from agent_sudo.inventory import InstallRecord, InventoryReport
+from agent_sudo.self_identity import SelfIdentity
 
 
 class DoctorTests(unittest.TestCase):
@@ -52,10 +54,140 @@ class DoctorTests(unittest.TestCase):
 
             self.assertNotIn("no personal data in repo", names)
 
+    def test_doctor_does_not_create_agent_sudo_in_cwd(self) -> None:
+        # #71: doctor is a read-only diagnostic and must not leave a
+        # .agent-sudo/ directory behind in the current working directory.
+        prev = Path.cwd()
+        with tempfile.TemporaryDirectory() as work_dir:
+            import os
+
+            os.chdir(work_dir)
+            try:
+                run_doctor()
+                self.assertFalse((Path(work_dir) / ".agent-sudo").exists())
+            finally:
+                os.chdir(prev)
+
+    def test_doctor_reports_single_consistent_state_root(self) -> None:
+        # #71: the audit-log and delegation-store probes must report the same
+        # state root, and the writability probe must not leave a doctor-audit
+        # file behind.
+        with tempfile.TemporaryDirectory() as state_dir:
+            store_path = Path(state_dir) / "delegations.json"
+            with unittest.mock.patch(
+                "agent_sudo.doctor.default_delegations_path",
+                return_value=store_path,
+            ):
+                checks = run_doctor()
+            audit = next(c for c in checks if c.name == "audit log writable")
+            deleg = next(c for c in checks if c.name == "delegation store writable")
+            self.assertTrue(audit.ok)
+            self.assertEqual(Path(audit.detail).parent, Path(deleg.detail).parent)
+            self.assertFalse((store_path.parent / "doctor-audit.jsonl").exists())
+
     def test_doctor_exit_code_fails_required_check(self) -> None:
         checks = [DoctorCheck("Python version OK", False, "too old")]
 
         self.assertEqual(doctor_exit_code(checks), 1)
+
+    def test_install_health_checks_present_by_default(self) -> None:
+        names = {check.name for check in run_doctor()}
+        self.assertIn("install up to date", names)
+        self.assertIn("runtime matches install source", names)
+
+
+class InstallHealthCheckTests(unittest.TestCase):
+    """Stale-install and editable-drift detection (issue #110), WARN-only."""
+
+    def _identity(self, **over) -> SelfIdentity:
+        base = dict(
+            version="0.5.6",
+            install_type="editable",
+            source_path="/repo/Agent_Sudo",
+            package_path="/repo/Agent_Sudo/agent_sudo",
+            python_executable="/py/bin/python",
+            python_prefix="/py",
+            python_version="3.11.14",
+            origin="console-script",
+        )
+        base.update(over)
+        return SelfIdentity(**base)
+
+    def _report(self, *, newest: str, installs) -> InventoryReport:
+        records = [
+            InstallRecord(root=root, executable="", version=version)
+            for root, version in installs
+        ]
+        return InventoryReport(
+            installs=records, configs=[], warnings=[], newest_version=newest
+        )
+
+    def _by_name(self, checks):
+        return {check.name: check for check in checks}
+
+    def test_stale_pinned_install_warns(self) -> None:
+        identity = self._identity(
+            install_type="pinned-wheel",
+            version="0.5.5",
+            source_path="/venv/site-packages/agent_sudo",
+            package_path="/venv/site-packages/agent_sudo",
+        )
+        report = self._report(
+            newest="0.5.6",
+            installs=[
+                ("/venv", "0.5.5"),
+                ("/Users/username/Developer/Agent_Sudo", "0.5.6"),
+            ],
+        )
+        checks = self._by_name(run_doctor(identity=identity, inventory_report=report))
+        stale = checks["install up to date"]
+        self.assertFalse(stale.ok)
+        self.assertIn("0.5.5", stale.detail)
+        self.assertIn("0.5.6", stale.detail)
+        self.assertIn("Developer/Agent_Sudo", stale.detail)
+        # a pinned install has no editable source to drift, so this stays OK
+        self.assertTrue(checks["runtime matches install source"].ok)
+        # WARN-only: a stale install must not fail the doctor exit code
+        self.assertEqual(
+            doctor_exit_code(run_doctor(identity=identity, inventory_report=report)), 0
+        )
+
+    def test_editable_source_mismatch_warns(self) -> None:
+        identity = self._identity(
+            install_type="editable",
+            version="0.5.6",
+            source_path="/old/checkout/Agent_Sudo",
+            package_path="/elsewhere/Agent_Sudo/agent_sudo",
+        )
+        report = self._report(
+            newest="0.5.6", installs=[("/old/checkout/Agent_Sudo", "0.5.6")]
+        )
+        checks = self._by_name(run_doctor(identity=identity, inventory_report=report))
+        drift = checks["runtime matches install source"]
+        self.assertFalse(drift.ok)
+        self.assertIn("/old/checkout/Agent_Sudo", drift.detail)
+        self.assertIn("/elsewhere/Agent_Sudo", drift.detail)
+        # version is newest, so staleness stays OK
+        self.assertTrue(checks["install up to date"].ok)
+        self.assertEqual(
+            doctor_exit_code(run_doctor(identity=identity, inventory_report=report)), 0
+        )
+
+    def test_clean_current_install_is_ok(self) -> None:
+        identity = self._identity()  # editable 0.5.6, package under source
+        report = self._report(newest="0.5.6", installs=[("/repo/Agent_Sudo", "0.5.6")])
+        checks = self._by_name(run_doctor(identity=identity, inventory_report=report))
+        self.assertTrue(checks["install up to date"].ok)
+        self.assertTrue(checks["runtime matches install source"].ok)
+        self.assertEqual(
+            doctor_exit_code(run_doctor(identity=identity, inventory_report=report)), 0
+        )
+
+    def test_unknown_versions_do_not_warn(self) -> None:
+        identity = self._identity(version="unknown")
+        report = self._report(newest="", installs=[])
+        checks = self._by_name(run_doctor(identity=identity, inventory_report=report))
+        self.assertTrue(checks["install up to date"].ok)
 
     def test_doctor_format_contains_status(self) -> None:
         text = format_doctor_checks(
@@ -158,6 +290,82 @@ class DoctorBroadDelegationTests(unittest.TestCase):
         checks = self._run_with_store([narrow])
         scope = next(c for c in checks if c.name == "delegation scope")
         self.assertTrue(scope.ok)
+
+
+class DuplicateInstallCheckTests(unittest.TestCase):
+    """doctor surfaces multiple active installs (issue #111), WARN-only."""
+
+    def _identity(self) -> SelfIdentity:
+        return SelfIdentity(
+            version="0.5.6",
+            install_type="editable",
+            source_path="/repo/Agent_Sudo",
+            package_path="/repo/Agent_Sudo/agent_sudo",
+            python_executable="/py/bin/python",
+            python_prefix="/py",
+            python_version="3.11.14",
+            origin="console-script",
+        )
+
+    def _report(self, installs) -> InventoryReport:
+        records = [
+            InstallRecord(
+                root=root, executable="", version=version, statuses=list(statuses)
+            )
+            for root, version, statuses in installs
+        ]
+        newest = max((r.version for r in records), default="")
+        return InventoryReport(
+            installs=records, configs=[], warnings=[], newest_version=newest
+        )
+
+    def _check(self, installs) -> DoctorCheck:
+        checks = run_doctor(
+            identity=self._identity(), inventory_report=self._report(installs)
+        )
+        return next(c for c in checks if c.name == "single active install")
+
+    def test_no_duplicates_is_ok(self) -> None:
+        check = self._check([("/repo/Agent_Sudo", "0.5.6", ["ACTIVE", "EDITABLE"])])
+        self.assertTrue(check.ok)
+
+    def test_duplicate_active_installs_warn(self) -> None:
+        installs = [
+            ("/venv/a", "0.5.6", ["ACTIVE", "DUPLICATE INSTALL"]),
+            ("/venv/b", "0.5.6", ["ACTIVE", "DUPLICATE INSTALL"]),
+        ]
+        check = self._check(installs)
+        self.assertFalse(check.ok)
+        self.assertEqual(
+            check.detail,
+            "Multiple active Agent_Sudo installs detected. Run `agent-sudo inventory` "
+            "to inspect and choose one canonical install.",
+        )
+        # WARN-only: must not fail the exit code.
+        checks = run_doctor(
+            identity=self._identity(), inventory_report=self._report(installs)
+        )
+        self.assertEqual(doctor_exit_code(checks), 0)
+
+    def test_pyenv_shim_plus_resolved_install_not_double_counted(self) -> None:
+        # A shim resolves to its version install; counting both would be a false
+        # duplicate. The PYENV-SHIM record is excluded, leaving one real install.
+        installs = [
+            ("/home/.pyenv/shims", "", ["ACTIVE", "PYENV-SHIM"]),
+            ("/home/.pyenv/versions/3.11.14", "0.5.6", ["ACTIVE", "EDITABLE"]),
+        ]
+        check = self._check(installs)
+        self.assertTrue(check.ok)
+
+    def test_same_version_editables_at_different_roots_warn(self) -> None:
+        # Two editable installs, same version, different source roots — still a
+        # duplicate because the roots differ.
+        installs = [
+            ("/repo/A", "0.5.6", ["ACTIVE", "EDITABLE", "DUPLICATE INSTALL"]),
+            ("/repo/B", "0.5.6", ["ACTIVE", "EDITABLE", "DUPLICATE INSTALL"]),
+        ]
+        check = self._check(installs)
+        self.assertFalse(check.ok)
 
 
 if __name__ == "__main__":

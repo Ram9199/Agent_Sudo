@@ -143,6 +143,10 @@ class ActionClassifier:
             request.provenance.origin_type == OriginType.EXTERNAL_CONTENT
             and action_classification != Classification.BLOCKED
         ):
+            # Taint must be monotonic: external-content origin escalates SAFE
+            # to SENSITIVE but never weakens a stronger base classification.
+            if action_classification == Classification.CRITICAL:
+                return Classification.CRITICAL
             return Classification.SENSITIVE
         if request.source_trust in {TrustLevel.EXTERNAL_CONTENT, TrustLevel.UNKNOWN}:
             if action_classification == Classification.SAFE:

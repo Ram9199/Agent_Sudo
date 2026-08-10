@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from agent_sudo.approvals import ApprovalProvider
 from agent_sudo.delegations import DelegationStore
@@ -23,6 +25,21 @@ class ApproveAllProvider(ApprovalProvider):
 class MCPGatewayTests(unittest.TestCase):
     def setUp(self) -> None:
         self.policy = load_default_policy()
+        # Hermetic isolation: these tests must not depend on the developer's
+        # ambient ~/.agent-sudo/config.json workspace (or AGENT_SUDO_WORKSPACE).
+        # When a configured workspace points at the repo root, a target inside
+        # it routes down the path-restriction branch instead of the policy
+        # BLOCKED branch the assertions expect (issue #84). Clear both so
+        # behavior matches a clean CI runner regardless of local state.
+        workspace_patcher = mock.patch(
+            "agent_sudo.context._load_config_workspace", return_value=None
+        )
+        workspace_patcher.start()
+        self.addCleanup(workspace_patcher.stop)
+        env_patcher = mock.patch.dict(os.environ, {}, clear=False)
+        env_patcher.start()
+        self.addCleanup(env_patcher.stop)
+        os.environ.pop("AGENT_SUDO_WORKSPACE", None)
 
     def test_safe_delegated_shell_executes(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -51,6 +68,42 @@ class MCPGatewayTests(unittest.TestCase):
         self.assertTrue(result.executed)
         self.assertEqual(result.gateway_result.decision, Decision.ALLOW)
         self.assertEqual(result.gateway_result.approval_method, "DELEGATION")
+
+    def test_shell_spawn_failure_reports_not_executed(self) -> None:
+        # PR #90 review fix: when the host fails to *spawn* the process
+        # (subprocess.run raises OSError), nothing executed — the result must
+        # report executed=False with no exit code, not executed=True.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = DelegationStore(Path(tmpdir) / "delegations.json")
+            store.create(
+                actor="mcp-client",
+                allowed_actions=["run_shell_command"],
+                allowed_paths=["pwd"],
+                max_uses=1,
+                reason="spawn-failure test",
+                critical=True,
+            )
+            gateway = PermissionGateway(self.policy, delegation_store=store)
+            with mock.patch(
+                "agent_sudo.mcp_gateway.subprocess.run",
+                side_effect=OSError("exec format error"),
+            ):
+                result = dispatch_mcp_tool_call(
+                    {
+                        "actor": "mcp-client",
+                        "source": "user",
+                        "tool": "shell",
+                        "action": "run_shell_command",
+                        "target": "pwd",
+                        "payload_summary": "show current directory",
+                    },
+                    gateway,
+                )
+
+        self.assertFalse(result.executed)
+        self.assertIsNone(result.exit_code)
+        self.assertIn("host failed to run command", result.reason)
+        self.assertIn("exec format error", result.stderr)
 
     def test_write_inside_demo_path_executes_with_approval(self) -> None:
         target = Path("/tmp/agent-sudo-demo/unit-test-notes.txt")

@@ -12,9 +12,17 @@ Use this checklist before publishing `agent-sudo`.
 - [ ] Check editable package install: `python3 -m pip install -e .`
 - [ ] If system Python blocks editable install, verify in a virtual environment
 - [ ] Run `agent-sudo doctor`
-- [ ] Run demo checks:
-  - [ ] `agent-sudo generic-check examples/generic_tool_call.json`
-  - [ ] `agent-sudo run examples/demo_requests.json --dry-run`
+- [ ] Run the one-command proof (no repo files needed): `agent-sudo eval`
+- [ ] Run a self-contained classifier check (verifies a pip-only install with no
+  repo checkout):
+  ```bash
+  cat > /tmp/agent-sudo-tool-call.json <<'EOF'
+  {"actor": "agent-a", "agent_type": "generic", "source": "user",
+   "source_trust": "USER_DIRECT", "tool": "unknown_tool", "action": "inspect",
+   "target": "/home/user/project", "payload_summary": "Inspect example project"}
+  EOF
+  agent-sudo generic-check /tmp/agent-sudo-tool-call.json
+  ```
 
 ## Known Limitations
 

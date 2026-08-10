@@ -375,9 +375,14 @@ class ApprovalRequest:
     expires_at: str
     status: ApprovalStatus
     reason: str
+    # Run-context of the process that requested this approval (issue #109):
+    # which agent-sudo copy, client, workspace, pid. Optional and additive so
+    # older records (and external producers) deserialize unchanged.
+    run_context: dict[str, Any] | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ApprovalRequest":
+        run_context = data.get("run_context")
         return cls(
             approval_request_id=str(data["approval_request_id"]),
             action_request=ActionRequest.from_dict(data["action_request"]),
@@ -388,10 +393,11 @@ class ApprovalRequest:
             expires_at=str(data["expires_at"]),
             status=ApprovalStatus(str(data["status"])),
             reason=str(data.get("reason", "")),
+            run_context=run_context if isinstance(run_context, dict) else None,
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data: dict[str, Any] = {
             "approval_request_id": self.approval_request_id,
             "action_request": self.action_request.to_dict(),
             "classification": self.classification.value,
@@ -402,3 +408,6 @@ class ApprovalRequest:
             "status": self.status.value,
             "reason": self.reason,
         }
+        if self.run_context is not None:
+            data["run_context"] = self.run_context
+        return data

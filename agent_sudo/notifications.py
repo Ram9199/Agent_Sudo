@@ -41,7 +41,16 @@ def send_approval_notification(approval: ApprovalRequest) -> bool:
         safe_target = safe_target[:47] + "..."
 
     title = "Agent_Sudo approval required"
-    body = f"{classification} action requested: {action} on {safe_target}\nRun: agent-sudo pending"
+    # Identify which copy of Agent_Sudo is asking (issue #109) so a stale or
+    # unexpected install can't prompt anonymously.
+    from agent_sudo.run_context import format_notification_stamp
+
+    stamp = format_notification_stamp(approval.run_context)
+    stamp_line = f"\n{stamp}" if stamp else ""
+    body = (
+        f"{classification} action requested: {action} on {safe_target}"
+        f"{stamp_line}\nRun: agent-sudo pending"
+    )
 
     # Truncate body to ensure safety
     if len(body) > 200:

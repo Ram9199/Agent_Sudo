@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License"></a>
-  <a href="https://pypi.org/project/agent-sudo-mcp/"><img src="https://img.shields.io/badge/PyPI-v0.5.4-blue" alt="PyPI v0.5.4"></a>
+  <a href="https://pypi.org/project/agent-sudo-mcp/"><img src="https://img.shields.io/pypi/v/agent-sudo-mcp" alt="PyPI version"></a>
   <a href="https://registry.modelcontextprotocol.io/v0/servers?search=agent-sudo-mcp"><img src="https://img.shields.io/badge/MCP%20adapter-published-brightgreen" alt="MCP adapter: published"></a>
 </p>
 
@@ -62,20 +62,30 @@ Walkthrough and expected output: [`examples/exfil_demo/`](examples/exfil_demo/).
 
 ## Evaluate Agent_Sudo in 5 Minutes
 
-Two commands. The second runs the whole boundary — blocked → delegated → allowed once → denied → audit verified — in one shot:
+**One install, one command** — runs the whole boundary (blocked → delegated → allowed once → denied → audit verified) in a throwaway temp directory:
 
-**Recommended (via pipx):**
 ```bash
-pipx install agent-sudo-mcp
-agent-sudo eval
+pipx install agent-sudo-mcp && agent-sudo eval
 ```
 
-**Alternative (via virtual environment):**
+<details>
+<summary><b>No pipx? Other ways to install — same package, pick one</b></summary>
+
 ```bash
+# Option A — pipx (recommended): isolates the tool and puts `agent-sudo` on your PATH everywhere
+pipx install agent-sudo-mcp
+
+# Option B — pip + virtualenv: installs into a project-local environment you activate
 python3 -m venv venv && source venv/bin/activate
 pip install agent-sudo-mcp
-agent-sudo eval
 ```
+
+Both install the **same** PyPI package and give you the same two commands:
+
+- **`agent-sudo`** — the CLI *you* run (`eval`, `audit`, `delegate`, `setup`, …).
+- **`agent-sudo-mcp`** — the server your AI client launches for you. You never run this by hand; `agent-sudo setup` wires it into your client (see [MCP Adapter Setup](#mcp-adapter-setup)).
+
+</details>
 
 You should see:
 
@@ -106,10 +116,11 @@ Next: agent-sudo audit list /tmp/agent-sudo-eval-.../audit.jsonl
 
 ## MCP Adapter Setup
 
-MCP is the first production-ready adapter — the recommended way to connect Agent_Sudo to a local agent today. After the 5-minute evaluation, wire the published MCP server into your MCP client:
+MCP is how Agent_Sudo connects to your agent — **the wiring, not another install.** You already installed the package in the step above; here `agent-sudo setup` plugs the `agent-sudo-mcp` server into your AI client, which then launches it for you automatically.
+
+Confirm the install and locate the server binary your client will run:
 
 ```bash
-pipx install agent-sudo-mcp
 agent-sudo --version
 which agent-sudo-mcp
 ```

@@ -152,9 +152,19 @@ class NativeNotificationTests(unittest.TestCase):
                 reason="sensitive quotes",
             )
         args3, _ = mock_run.call_args
+        body = args3[0][2]
+        # The action/target head and the trailing Run hint are unchanged; the
+        # run-context stamp line (issue #109) is inserted between them. Assert
+        # the stable parts plus the stamp presence, without pinning the
+        # environment-dependent version/install_type the stamp reports.
         self.assertIn(
-            'display notification "SENSITIVE action requested: generic_action on description with quotes\nRun: agent-sudo pending" with title "Agent_Sudo approval required"',
-            args3[0][2],
+            'display notification "SENSITIVE action requested: generic_action on description with quotes',
+            body,
+        )
+        self.assertIn("\nvia agent-sudo ", body)
+        self.assertIn(
+            '\nRun: agent-sudo pending" with title "Agent_Sudo approval required"',
+            body,
         )
 
     @patch("sys.platform", "darwin")

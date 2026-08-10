@@ -84,9 +84,9 @@ python3 -m pip install -e .
 python3 -m agent_sudo.gateway --version
 ```
 
-`agent-sudo --version` prints the installed version (e.g. `agent-sudo v0.5.x`). It should match the version shown on the [PyPI badge](https://pypi.org/project/agent-sudo-mcp/) in the README.
+`agent-sudo --version` prints the installed version (e.g. `agent-sudo v0.5.x`) followed by a provenance block — install type (editable / pinned wheel / source checkout), source path, and the Python running it. The version should match the [PyPI badge](https://pypi.org/project/agent-sudo-mcp/) in the README, and the source path should be the install you expect to be using.
 
-If `agent-sudo --version` shows an older version than the one you just installed, your shell is resolving a stale `agent-sudo` ahead of this install. Use the `python3 -m agent_sudo.gateway ...` fallback commands below, or reinstall Agent_Sudo in your active environment.
+If `agent-sudo --version` shows an older version than the one you just installed — or an `install:`/`python:` line pointing at a copy you didn't expect — your shell is resolving a stale `agent-sudo` ahead of this install. Use the `python3 -m agent_sudo.gateway ...` fallback commands below, or reinstall Agent_Sudo in your active environment. For the full picture across every install on the machine, run `agent-sudo inventory`.
 
 > The `agent-sudo-mcp` MCP server used in the steps below is installed by `pipx install agent-sudo-mcp`, `pip install agent-sudo-mcp`, and `pip install -e .`, so the evaluation runs the same way from a published install or a source checkout.
 

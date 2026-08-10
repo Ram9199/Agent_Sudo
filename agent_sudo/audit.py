@@ -21,9 +21,17 @@ class AuditLogger:
         return Path(str(self.path) + ".lock")
 
     def record(self, result: GatewayResult) -> None:
+        # Lazy import: pending_approvals imports this module at load time, so the
+        # dependency only closes at call time (same pattern as run_context).
+        from agent_sudo.pending_approvals import request_fingerprint_hash
+
         entry: dict[str, Any] = {
             "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "event_type": "gateway_decision",
+            # Bind every decision to the exact request that produced it, so the
+            # log alone proves what was authorized (and, for delegated allows,
+            # that the grant was consumed for a specific request).
+            "request_fingerprint": request_fingerprint_hash(result.request),
             **result.to_dict(),
         }
         self._write_entry(entry)
@@ -37,11 +45,19 @@ class AuditLogger:
         self._write_entry(entry)
 
     def _write_entry(self, entry: dict[str, Any]) -> None:
+        # Stamp which copy of Agent_Sudo wrote this entry (issue #109). Done at
+        # the single write choke point so every record — decisions and approval
+        # lifecycle events alike — names its producer. Additive: it is hashed
+        # with the rest of the entry and ignored by older readers.
+        if "run_context" not in entry:
+            from agent_sudo.run_context import current as current_run_context
+
+            entry["run_context"] = current_run_context()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         # Read last hash -> link -> append must be one atomic step, otherwise two
         # concurrent appends read the same previous_hash and fork the chain. The
-        # lock (and a torn/corrupt tail raising in _last_entry_hash) keep us
-        # fail-closed: on failure we raise rather than write an unchained row.
+        # lock (and full existing-chain verification in _last_entry_hash) keep
+        # us fail-closed: on failure we raise rather than extend bad evidence.
         with file_lock(self._lock_path, self.lock_timeout):
             previous_hash = _last_entry_hash(self.path)
             entry["previous_hash"] = previous_hash
@@ -57,6 +73,84 @@ def verify_audit_log(path: Path) -> tuple[bool, str]:
     if result.success:
         return True, "audit log verified"
     return False, str(result)
+
+
+def verify_authorization_binding(
+    entries: list[dict[str, Any]],
+) -> tuple[bool, str]:
+    """Check that consumed authorizations are correctly bound to one request.
+
+    Operates on raw audit entries (so a third party can run it against the log
+    alone). It verifies two properties of the binding stamped by the engine:
+
+      1. Integrity — each ``approval_used`` event's stamped ``request_fingerprint``
+         equals the fingerprint recomputed from the embedded ``action_request``.
+         A mismatch means the request or the stamp was altered after the fact.
+      2. Single-consume — no approval id appears in more than one
+         ``approval_used`` event. A repeat is a replay/double-consume.
+
+    It also confirms every delegated ALLOW carries a ``request_fingerprint`` (so
+    a delegated decision is always traceable to an exact request). Note this
+    does NOT require a delegation token to map to a single fingerprint: a token
+    is a *scoped* grant and may legitimately authorize several distinct requests
+    within its scope up to ``max_uses`` — that is the documented difference
+    between delegations (scoped) and approvals (exact-request).
+
+    This does not check the hash chain; run :func:`verify_audit_log` for that.
+    """
+    from agent_sudo.pending_approvals import fingerprint_hash_from_dict
+
+    problems: list[str] = []
+    consumed_ids: dict[str, str] = {}
+    used = 0
+    delegated = 0
+    for number, entry in enumerate(entries, start=1):
+        event_type = str(entry.get("event_type", ""))
+        if event_type == "approval_used":
+            used += 1
+            approval = entry.get("approval_request")
+            approval = approval if isinstance(approval, dict) else {}
+            approval_id = str(approval.get("approval_request_id", ""))
+            stamped = entry.get("request_fingerprint")
+            action_request = approval.get("action_request")
+            if isinstance(action_request, dict) and isinstance(stamped, str):
+                computed = fingerprint_hash_from_dict(action_request)
+                if stamped != computed:
+                    problems.append(
+                        f"line {number}: approval_used fingerprint does not match "
+                        f"its request (stamped {stamped[:12]}.., computed "
+                        f"{computed[:12]}..)"
+                    )
+            elif stamped is None:
+                problems.append(
+                    f"line {number}: approval_used is not bound to a request "
+                    "fingerprint"
+                )
+            if approval_id in consumed_ids:
+                problems.append(
+                    f"line {number}: approval {approval_id} consumed more than "
+                    "once (replay/double-consume)"
+                )
+            else:
+                consumed_ids[approval_id] = str(stamped or "")
+        elif (
+            event_type == "gateway_decision"
+            and entry.get("decision") == "ALLOW"
+            and entry.get("approval_method") == "DELEGATION"
+        ):
+            delegated += 1
+            if not entry.get("request_fingerprint"):
+                problems.append(
+                    f"line {number}: delegated ALLOW is not bound to a request "
+                    "fingerprint"
+                )
+    if problems:
+        return False, "authorization binding check failed: " + "; ".join(problems)
+    return (
+        True,
+        "authorization binding verified "
+        f"({used} approval consumption(s), {delegated} delegated allow(s))",
+    )
 
 
 def read_audit_entries(path: Path) -> list[dict[str, Any]]:
@@ -294,16 +388,35 @@ GENESIS_HASH = "0" * 64
 
 
 def _last_entry_hash(path: Path) -> str:
+    """Return the final hash only when every existing entry verifies.
+
+    Appending after a malformed or tampered entry would make the new record
+    look correctly linked while preserving an invalid audit trail. Verify each
+    existing link and digest before using the final hash as the next entry's
+    predecessor, so writers fail closed until an operator investigates.
+    """
     if not path.exists():
         return GENESIS_HASH
     last_hash = GENESIS_HASH
     with path.open("r", encoding="utf-8") as handle:
-        for line in handle:
+        for line_number, line in enumerate(handle, start=1):
             if not line.strip():
                 continue
             entry = json.loads(line)
+            if not isinstance(entry, dict):
+                raise ValueError(
+                    f"existing audit log line {line_number} is not a JSON object"
+                )
+            previous_hash = entry.get("previous_hash")
+            if previous_hash != last_hash:
+                raise ValueError(
+                    f"existing audit log line {line_number} has a previous_hash mismatch"
+                )
             value = entry.get("entry_hash")
-            if not isinstance(value, str):
-                raise ValueError("existing audit log contains entry without entry_hash")
+            expected_hash = compute_entry_hash(last_hash, entry)
+            if value != expected_hash:
+                raise ValueError(
+                    f"existing audit log line {line_number} has an entry_hash mismatch"
+                )
             last_hash = value
     return last_hash

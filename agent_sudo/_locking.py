@@ -24,20 +24,42 @@ from __future__ import annotations
 import errno
 import os
 import sys
-import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-if sys.platform == "win32":  # pragma: no cover - exercised on Windows CI
+if sys.platform == "win32":
     import msvcrt
-else:  # pragma: no cover - exercised on POSIX CI
-    import fcntl
+else:
+    try:  # pragma: no cover - import guard
+        import fcntl
+    except ImportError as exc:  # pragma: no cover - non-POSIX platforms
+        raise ImportError(
+            "agent_sudo file locking requires POSIX fcntl (macOS/Linux) or Windows msvcrt"
+        ) from exc
 
 
 DEFAULT_LOCK_TIMEOUT = 5.0
 _POLL_INTERVAL = 0.01
+
+# errno values that mean "lock is currently held, retry": EWOULDBLOCK/EAGAIN come
+# from POSIX ``fcntl.flock``; EACCES/EDEADLK are what ``msvcrt.locking`` raises on
+# Windows when a non-blocking lock conflicts.
+_LOCK_BUSY_ERRNOS = frozenset(
+    {errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES, errno.EDEADLK}
+)
+# Windows surfaces the same condition as a winerror rather than an errno:
+# ERROR_SHARING_VIOLATION (32) and ERROR_LOCK_VIOLATION (33).
+_WIN_LOCK_BUSY_WINERRORS = frozenset({32, 33})
+
+
+def _is_lock_busy(exc: OSError) -> bool:
+    """True if ``exc`` means the lock is held and we should keep retrying."""
+    return (
+        exc.errno in _LOCK_BUSY_ERRNOS
+        or getattr(exc, "winerror", None) in _WIN_LOCK_BUSY_WINERRORS
+    )
 
 
 # ``msvcrt.locking`` applies locks per process, so a second thread in the same
@@ -128,11 +150,14 @@ def file_lock(lock_path: Path, timeout: float = DEFAULT_LOCK_TIMEOUT) -> Iterato
         fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
         while True:
             try:
-                _try_platform_lock(fd)
-                locked = True
+                if sys.platform == "win32":
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                else:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 break
             except OSError as exc:
-                if not _lock_unavailable(exc):
+                if not _is_lock_busy(exc):
                     raise
                 if time.monotonic() >= deadline:
                     raise LockTimeout(
@@ -142,8 +167,11 @@ def file_lock(lock_path: Path, timeout: float = DEFAULT_LOCK_TIMEOUT) -> Iterato
         yield
     finally:
         try:
-            if locked and fd is not None:
-                _release_platform_lock(fd)
+            if sys.platform == "win32":
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(fd, fcntl.LOCK_UN)
         finally:
             try:
                 if fd is not None:

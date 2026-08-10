@@ -155,6 +155,25 @@ class SetupGuideTests(unittest.TestCase):
         self.assertIn("dry-run only", text)
         self.assertIn("1. ", text)
 
+    def test_no_setup_target_references_repo_relative_examples(self) -> None:
+        # #67: the verify step of every setup target must be runnable by a
+        # pip-only user with no repo checkout — never a repo-relative
+        # examples/*.json path that would raise FileNotFoundError.
+        for target in SETUP_TARGETS:
+            text = render_setup(target)
+            self.assertNotIn("examples/", text, target)
+
+    def test_prose_verify_steps_are_self_contained(self) -> None:
+        # The hermes/openclaw verify steps must create their own input inline
+        # (printf > /tmp/...) and then run the matching check command.
+        for target, command in (
+            ("hermes", "agent-sudo hermes-check"),
+            ("openclaw", "agent-sudo generic-check"),
+        ):
+            text = render_setup(target)
+            self.assertIn("printf", text, target)
+            self.assertIn(command, text, target)
+
 
 class SetupSelectorTests(unittest.TestCase):
     def test_menu_order_and_labels(self) -> None:

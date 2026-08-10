@@ -139,6 +139,7 @@ class AgentSudoMCPServer:
         request_id = message.get("id")
         try:
             if method == "initialize":
+                self._capture_client(message)
                 return _response(request_id, self._initialize_result())
             if method == "tools/list":
                 return _response(request_id, {"tools": TOOLS})
@@ -147,6 +148,19 @@ class AgentSudoMCPServer:
             return _error(request_id, -32601, f"method not found: {method}")
         except Exception as exc:
             return _error(request_id, -32603, str(exc))
+
+    @staticmethod
+    def _capture_client(message: dict[str, Any]) -> None:
+        # The MCP client announces itself via initialize params.clientInfo.name;
+        # record it so approval prompts/notifications/audit name the real caller
+        # (issue #109). Best-effort: a missing name leaves the "unknown" default.
+        try:
+            name = message["params"]["clientInfo"]["name"]
+        except (KeyError, TypeError):
+            return
+        from agent_sudo.run_context import set_client
+
+        set_client(str(name))
 
     def _initialize_result(self) -> dict[str, Any]:
         return {
@@ -275,6 +289,11 @@ def build_server(
     interactive_approvals: bool = False,
     approval_wait_seconds: float = DEFAULT_APPROVAL_WAIT_SECONDS,
 ) -> AgentSudoMCPServer:
+    # Record the active workspace for run-context stamping (issue #109).
+    from agent_sudo.run_context import set_workspace
+
+    set_workspace(workspace)
+
     policy = load_policy(policy_path) if policy_path else load_default_policy()
     audit_logger = AuditLogger(audit_log or Path(".agent-sudo/mcp-audit.jsonl"))
     delegation_store = DelegationStore(delegations_file) if delegations_file else None
@@ -338,17 +357,52 @@ def write_message(stream: BinaryIO, message: dict[str, Any]) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog=SERVER_NAME)
+    parser = argparse.ArgumentParser(
+        prog=SERVER_NAME,
+        description=(
+            "Agent_Sudo MCP server (stdio). Launched by your MCP client, not "
+            "run by hand. To try the engine first, run: agent-sudo eval"
+        ),
+        epilog=(
+            "Quickstart: pipx install agent-sudo-mcp && agent-sudo eval. "
+            "Generate a client config with: agent-sudo setup. "
+            "Use absolute paths for --audit-log / --delegations-file / "
+            "--pending-approvals-file: the client may launch this server from "
+            "any directory."
+        ),
+    )
     parser.add_argument(
         "--version", action="version", version=f"{SERVER_NAME} {__version_label__}"
     )
     parser.add_argument("--policy", type=Path, help="Path to policy YAML")
     parser.add_argument(
-        "--audit-log", type=Path, default=Path(".agent-sudo/mcp-audit.jsonl")
+        "--audit-log",
+        type=Path,
+        default=Path(".agent-sudo/mcp-audit.jsonl"),
+        help=(
+            "Path to the JSONL audit log to append decisions to "
+            "(default: .agent-sudo/mcp-audit.jsonl, relative to the launch "
+            "directory). Use an absolute path so the log is findable."
+        ),
     )
-    parser.add_argument("--delegations-file", type=Path)
     parser.add_argument(
-        "--pending-approvals-file", type=Path, default=PENDING_APPROVALS_PATH
+        "--delegations-file",
+        type=Path,
+        help=(
+            "Path to the delegation-token store. Required to honor "
+            "`agent-sudo delegate create` tokens; without it the server runs "
+            "with no delegation store and tokens are silently ignored."
+        ),
+    )
+    parser.add_argument(
+        "--pending-approvals-file",
+        type=Path,
+        default=PENDING_APPROVALS_PATH,
+        help=(
+            "Path to the pending-approvals store that `agent-sudo pending` / "
+            "`agent-sudo approve` read and write "
+            f"(default: {PENDING_APPROVALS_PATH})."
+        ),
     )
     parser.add_argument(
         "--approval-ttl-seconds",

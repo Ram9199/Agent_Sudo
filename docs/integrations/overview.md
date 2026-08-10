@@ -88,16 +88,26 @@ Shell requests normalize to `run_shell_command`, which is `CRITICAL` under the d
 
 ## Generic Agent
 
-Use `generic-check` to inspect a universal tool call:
+First write a universal tool-call file (self-contained — no repo checkout needed):
 
 ```bash
-agent-sudo generic-check examples/generic_tool_call.json
+cat > /tmp/agent-sudo-tool-call.json <<'EOF'
+{"actor": "agent-a", "agent_type": "generic", "source": "user",
+ "source_trust": "USER_DIRECT", "tool": "unknown_tool", "action": "inspect",
+ "target": "/home/user/project", "payload_summary": "Inspect example project"}
+EOF
+```
+
+Use `generic-check` to inspect it:
+
+```bash
+agent-sudo generic-check /tmp/agent-sudo-tool-call.json
 ```
 
 Use `generic-run --dry-run` to evaluate without execution:
 
 ```bash
-agent-sudo generic-run examples/generic_tool_call.json --dry-run
+agent-sudo generic-run /tmp/agent-sudo-tool-call.json --dry-run
 ```
 
 ## MCP Tool Wrapper

@@ -8,10 +8,51 @@ from contextlib import redirect_stdout, redirect_stderr
 from pathlib import Path
 
 from agent_sudo.gateway import main
-from agent_sudo.upgrade import handle_upgrade, is_generated_artifact, version_key
+from agent_sudo.upgrade import (
+    _preremove_scripts_on_windows,
+    _restore_preremoved_scripts,
+    handle_upgrade,
+    is_generated_artifact,
+    version_key,
+)
 
 
 class UpgradeTests(unittest.TestCase):
+    def test_preremove_scripts_is_noop_off_windows(self) -> None:
+        with unittest.mock.patch("agent_sudo.upgrade.sys.platform", "darwin"):
+            self.assertEqual(_preremove_scripts_on_windows(), [])
+
+    def test_preremove_and_restore_windows_launchers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scripts_dir = Path(tmpdir)
+            python_exe = scripts_dir / "python.exe"
+            python_exe.write_bytes(b"python")
+            launchers = [
+                scripts_dir / "agent-sudo.exe",
+                scripts_dir / "agent-sudo-mcp.exe",
+            ]
+            for launcher in launchers:
+                launcher.write_bytes(b"launcher")
+
+            with (
+                unittest.mock.patch("agent_sudo.upgrade.sys.platform", "win32"),
+                unittest.mock.patch(
+                    "agent_sudo.upgrade.sys.executable", str(python_exe)
+                ),
+            ):
+                moved = _preremove_scripts_on_windows()
+
+            self.assertEqual(
+                [original for original, _ in moved],
+                [launcher.resolve() for launcher in launchers],
+            )
+            self.assertTrue(all(not launcher.exists() for launcher in launchers))
+            self.assertTrue(all(backup.exists() for _, backup in moved))
+
+            _restore_preremoved_scripts(moved)
+            self.assertTrue(all(launcher.exists() for launcher in launchers))
+            self.assertTrue(all(not backup.exists() for _, backup in moved))
+
     def test_version_key_parsing(self) -> None:
         self.assertEqual(version_key("v0.3.4-beta"), (0, 3, 4))
         self.assertEqual(version_key("v0.4.0-rc1"), (0, 4, 0, 1))

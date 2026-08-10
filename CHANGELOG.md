@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.5.6
+
+Security-correctness patch: external-content taint can no longer weaken approval strength. Also picks up a pending-approval store concurrency fix that landed after v0.5.5.
+
+- **Taint monotonicity (#103, #104).** The classifier's `EXTERNAL_CONTENT` provenance branch returned SENSITIVE for any non-BLOCKED action, downgrading CRITICAL-policy actions (`send_email`, `money_transfer`, `external_post`, `credential_access`, `run_shell_command`, `delete_file`, `legal_or_employment_message`) from strong approval to normal approval. External content may raise risk but must never lower it: SAFE still escalates to SENSITIVE; SENSITIVE, CRITICAL, and BLOCKED keep their tier. Adds regression tests for all seven critical actions and a property test asserting the tainted classification is never lower than the untainted one for every default-policy action across both taint channels (provenance origin and source trust).
+- **Pending approval store concurrency (#100).** Mutations of the pending-approval store are serialized, preventing concurrent approval flows from corrupting or losing pending entries. Adds concurrency regression tests.
+- **Compatibility.** No breaking changes, no schema changes, no new runtime dependencies. Visible behavior change (intended, strictly tightening): actions whose policy tier is CRITICAL now require strong/passphrase approval when tagged with `EXTERNAL_CONTENT` provenance, and their audit records carry classification `CRITICAL` instead of `SENSITIVE` — relevant to anyone alerting on classification counts. Nothing previously blocked is allowed and nothing previously allowed is blocked.
+
+## v0.5.5
+
+First-run and pip-only-user fixes surfaced by a fresh-install audit, plus a re-landed review fix. No engine behavior, schema, policy, or dependency changes.
+
+- **Friendly input errors (#69).** `check`, `run`, `generic-check`, `generic-run`, `hermes-check`, and `codex-check` no longer dump a raw traceback (and the user's path) when given a missing file, invalid JSON, or an inline string instead of a file path. They now print a one-line error with a payload example and exit non-zero, and the positional file arguments carry `--help` descriptions with an example schema.
+- **`doctor` path consistency and no CWD litter (#71).** `agent-sudo doctor` no longer creates a `.agent-sudo/` directory in the current working directory. It probes the single home state root (`~/.agent-sudo`) for both the audit-log and delegation-store writability checks, so it reports one consistent location.
+- **No repo-relative examples in docs or setup output (#67).** Documented commands and the `agent-sudo setup` verify steps (hermes/openclaw) no longer reference `examples/*.json` files that a `pip`/`pipx` install does not have. Each is now self-contained (an inline payload written to a temp file, or `agent-sudo eval`), so every documented command works from a clean install with no repository checkout. The `demo` closing line now points at `agent-sudo eval`.
+- **Improved `agent-sudo-mcp --help` (#72).** `--audit-log`, `--delegations-file`, and `--pending-approvals-file` now have descriptions, and the server help carries a description and an epilog pointing at `agent-sudo eval` and `agent-sudo setup`.
+- **Test isolation (#84).** The MCP gateway tests no longer depend on the developer's ambient `~/.agent-sudo/config.json` workspace (or `AGENT_SUDO_WORKSPACE`), so they behave the same locally as on a clean CI runner.
+- **Re-landed missed PR #90 review fixes (#95).** PR #90 was squash-merged without its review-fix commit; this restores it: the demo shell executor reports `executed=False` (not `True`) when the host fails to *spawn* a process (`OSError`), and the Windows file-lock retry filter replaces magic numbers `(13, 33)` with named errno/winerror sets via an `_is_lock_busy()` helper. Adds the regression tests whose absence let the fix silently drop.
+- **Compatibility.** No breaking changes, no schema changes, no policy-behavior changes, no new runtime dependencies. Docs, CLI help/error text, test isolation, and the `executed` flag on a (rare) demo-executor spawn failure are the only user-visible changes.
+
 ## v0.5.4
 
 - **`agent-sudo eval` one-shot evaluator.** New `agent-sudo eval` runs the full deny → delegate → allow-once → deny-exhausted → audit-verified ladder in a single command and prints a PASS/FAIL report. It runs entirely in a temporary directory and never reads or writes the user's `~/.agent-sudo` state. Exits `0` only when all five steps pass (CI-safe); `--json` emits a machine-readable report and `--output-dir DIR` writes artifacts to a chosen location. This is the published "fastest path" referenced by the README and the 5-minute evaluator guide, which were previously broken on PyPI because the command did not ship.

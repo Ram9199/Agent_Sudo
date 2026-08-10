@@ -19,7 +19,7 @@ command does without reading source. Two executables ship with the package:
 | **Onboarding** | `setup`, `demo`, `doctor`, `init-approval`, `workspace`, `context` |
 | **Operational** (live use) | `agent-sudo-mcp`, `pending`, `approve`, `deny`, `approval-helper`, `delegate` |
 | **Audit / investigation** | `audit list`, `audit review`, `audit trace`, `verify-audit`, `verify-routing` |
-| **Troubleshooting** | `doctor`, `context`, `verify-routing` |
+| **Troubleshooting** | `doctor`, `context`, `verify-routing`, `inventory`, `topology` |
 | **Administrative** | `init-approval`, `workspace set`, `delegate revoke`, `upgrade-local` |
 | **Integration / dev** | `check`, `run`, `generic-check`, `generic-run`, `hermes-check`, `codex-check` |
 
@@ -70,11 +70,68 @@ and troubleshooting); they are listed under their primary use.
 
 ### `doctor`
 - **Purpose:** report local readiness (Python version, policy, writable audit/
-  delegation stores, approval config).
+  delegation stores, approval config). Also WARNs when the **running install is
+  stale** (an older copy is resolving ahead of a newer one on the machine) or
+  when an **editable install has drifted** from its registered source — so a
+  shell silently running an out-of-date copy is caught here, not in production.
+  It also WARNs when **multiple active installs** are detected (more than one
+  Agent_Sudo resolving on PATH or referenced by client configs), pointing you
+  to `agent-sudo inventory` to pick one canonical install.
 - **Example:** `agent-sudo doctor`
 - **When to use:** right after install, or when something isn't working.
 - **Common mistakes:** expecting it to validate your MCP client config — it checks the
   local Agent_Sudo install, not the client wiring (use `verify-routing` for that).
+- **Note:** the staleness/drift checks are **WARN-only** — they never fail the
+  exit code or change anything; run `agent-sudo inventory` for the full
+  install map and `--version` to see which copy is running.
+
+### `--version`
+- **Purpose:** print the running version **and which copy is running it** —
+  install type (editable / pinned wheel / source checkout), the source path,
+  and the Python executable. A bare version number can't tell you whether the
+  code you're editing is the code that's enforcing; this can.
+- **Example:**
+  ```
+  agent-sudo --version
+  agent-sudo v0.5.6
+    install:  editable  (source: /Volumes/Storage/Agent_Sudo)
+    python:   ~/.pyenv/versions/3.11.14/bin/python  (3.11.14)
+  ```
+- **When to use:** first check when a client seems to run stale code. The first
+  line stays a bare `agent-sudo vX.Y.Z` so scripts can still parse it.
+- **See also:** `inventory` for the full multi-install picture across the machine.
+
+### `inventory`
+- **Purpose:** read-only report of every Agent_Sudo install it can find (PATH,
+  pipx, pyenv, venvs referenced by client configs), the MCP client configs that
+  point at them (Claude Desktop, Claude Code, Codex, Gemini, Antigravity,
+  Hermes), and how they relate: version drift, duplicate installs, stale
+  copies, PATH shadowing, editable installs, configs pointing at missing
+  binaries.
+- **Example:** `agent-sudo inventory` (human report) or `agent-sudo inventory --json`
+- **When to use:** when a client seems to run an old version, when you have
+  installed Agent_Sudo more than one way, or before upgrading.
+- **Common mistakes:** expecting it to fix anything — it never modifies,
+  deletes, or uninstalls; every line ends in a recommendation you apply
+  yourself. It also reads metadata instead of executing the binaries it finds,
+  so a corrupted install shows as `UNKNOWN` rather than being run.
+
+### `topology`
+- **Purpose:** answer "what Agent_Sudo instances are guarding me right now, and
+  what is **not** routed through Agent_Sudo?" Four sections: **CLI surfaces**
+  (the `agent-sudo` your shell resolves), **MCP clients** (Claude Desktop,
+  Gemini, Antigravity… with config path, command, version, and the audit log
+  each writes to), **audit destinations** (which clients share which log), and
+  **not routed** (MCP tooling present on the machine but not wired through
+  Agent_Sudo — Smithery is the motivating example).
+- **Example:** `agent-sudo topology` (human view) or `agent-sudo topology --json`
+- **When to use:** when you can't tell which copy a terminal vs an IDE is using,
+  or whether a separate MCP tool is bypassing the gateway.
+- **Common mistakes:** treating "not routed" as an error — it is informational;
+  a tool running outside Agent_Sudo is fine if that is intentional. Like
+  `inventory`, it is **read-only**: no auto-fix, no cleanup. It is a regrouping
+  of `inventory` data plus a presence check — run `inventory` for install-level
+  drift/duplicate detail.
 
 ### `init-approval`
 - **Purpose:** create (or reset) the local passphrase used to approve **critical**
@@ -213,8 +270,9 @@ trio: **`doctor`** for local install health, **`context`** for workspace resolut
 ## Integration / dev (single-tool-call evaluation)
 
 These commands evaluate a **single tool-call JSON file** through the policy engine. They
-are for embedding/testing the engine, not day-to-day operation. Example inputs live in
-[`examples/`](../examples/).
+are for embedding/testing the engine, not day-to-day operation. The argument is a path to
+a JSON file you create (there is no inline-string form). Run `agent-sudo <command> --help`
+to see the expected schema with a copy-pasteable example.
 
 | Command | Input | Behavior |
 | :--- | :--- | :--- |
@@ -225,7 +283,16 @@ are for embedding/testing the engine, not day-to-day operation. Example inputs l
 | `hermes-check` | Hermes native tool-call JSON | normalize → classify, dry-run |
 | `codex-check` | Codex native tool-call JSON | normalize → classify, dry-run |
 
-- **Example:** `agent-sudo generic-check examples/generic_tool_call.json`
+- **Example** (self-contained — works from any directory, no repo checkout):
+
+  ```bash
+  cat > /tmp/agent-sudo-tool-call.json <<'EOF'
+  {"actor": "agent-a", "agent_type": "generic", "source": "user",
+   "source_trust": "USER_DIRECT", "tool": "unknown_tool", "action": "inspect",
+   "target": "/home/user/project", "payload_summary": "Inspect example project"}
+  EOF
+  agent-sudo generic-check /tmp/agent-sudo-tool-call.json
+  ```
 - **When to use:** wiring the engine into a runtime/adapter and verifying classification.
 - **Common mistakes:** expecting these to honor delegations — the `*-check` variants are
   dry-run classifiers and do not consult a delegation store; live enforcement happens in
@@ -242,7 +309,7 @@ are for embedding/testing the engine, not day-to-day operation. Example inputs l
 
 ### Poorly documented (before this reference)
 - `check`, `hermes-check`, `codex-check` had little user-facing documentation and an
-  undocumented input schema (mitigated by the `examples/` files and the table above).
+  undocumented input schema (mitigated by the `--help` schema examples and the table above).
 - `context` vs `workspace show` distinction was not stated anywhere.
 
 ### Overlapping / redundant commands

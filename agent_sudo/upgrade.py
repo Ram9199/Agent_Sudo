@@ -4,9 +4,13 @@ import re
 import shutil
 import subprocess
 import sys
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from agent_sudo import __version_label__
+
+
+WINDOWS_CONSOLE_SCRIPTS = ("agent-sudo.exe", "agent-sudo-mcp.exe")
 
 
 def get_git_root() -> Path | None:
@@ -138,6 +142,75 @@ def get_latest_git_tag(git_root: Path) -> str | None:
     return tags[-1]
 
 
+def _preremove_scripts_on_windows() -> list[tuple[Path, Path]]:
+    """Move Agent_Sudo launchers out of pip's way on Windows.
+
+    Windows does not allow pip to unlink the console launcher that started this
+    process. It does allow the launcher to be renamed, after which pip can
+    install its replacement at the original path.
+    """
+    if sys.platform != "win32":
+        return []
+
+    scripts_dir = Path(sys.executable).resolve().parent
+    moved: list[tuple[Path, Path]] = []
+    try:
+        for script_name in WINDOWS_CONSOLE_SCRIPTS:
+            original = scripts_dir / script_name
+            if not original.is_file():
+                continue
+            backup = original.with_name(
+                f".{original.stem}-upgrade-{uuid.uuid4().hex}.old.exe"
+            )
+            original.rename(backup)
+            moved.append((original, backup))
+    except OSError:
+        _restore_preremoved_scripts(moved)
+        raise
+    return moved
+
+
+def _restore_preremoved_scripts(moved: list[tuple[Path, Path]]) -> None:
+    for original, backup in reversed(moved):
+        if backup.exists() and not original.exists():
+            try:
+                backup.rename(original)
+            except OSError:
+                pass
+
+
+def _remove_preremoved_scripts(moved: list[tuple[Path, Path]]) -> None:
+    leftovers: list[Path] = []
+    for _, backup in moved:
+        try:
+            backup.unlink(missing_ok=True)
+        except OSError:
+            # The launcher that invoked us can remain locked until this Python
+            # process exits. A detached Python child removes that final backup.
+            leftovers.append(backup)
+    if not leftovers:
+        return
+
+    cleanup_code = (
+        "import pathlib,sys,time; time.sleep(2); "
+        "[(lambda p: p.unlink(missing_ok=True))(pathlib.Path(p)) for p in sys.argv[1:]]"
+    )
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(
+        subprocess, "DETACHED_PROCESS", 0
+    )
+    try:
+        subprocess.Popen(
+            [sys.executable, "-c", cleanup_code, *map(str, leftovers)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=creationflags,
+            close_fds=True,
+        )
+    except OSError:
+        pass
+
+
 def handle_upgrade(*, check_only: bool = False, allow_dirty: bool = False) -> int:
     git_root = get_git_root()
     if not git_root:
@@ -238,14 +311,25 @@ def handle_upgrade(*, check_only: bool = False, allow_dirty: bool = False) -> in
         print("Error: git pull failed.", file=sys.stderr)
         return 1
 
-    # Reinstall
+    # Reinstall. On Windows the active console launcher cannot be unlinked, so
+    # move the Agent_Sudo stubs aside before pip's uninstall step.
     print("Reinstalling agent-sudo in editable mode...")
+    try:
+        moved_scripts = _preremove_scripts_on_windows()
+    except OSError as exc:
+        print(
+            f"Error: Could not prepare Windows launchers for upgrade ({exc}).",
+            file=sys.stderr,
+        )
+        return 1
     reinstall_cmd = subprocess.run(
         [sys.executable, "-m", "pip", "install", "-e", "."], cwd=git_root
     )
     if reinstall_cmd.returncode != 0:
+        _restore_preremoved_scripts(moved_scripts)
         print("Error: pip installation failed.", file=sys.stderr)
         return 1
+    _remove_preremoved_scripts(moved_scripts)
 
     # Verify installation
     print("Verifying installation...")

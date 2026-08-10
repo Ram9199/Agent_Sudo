@@ -45,7 +45,7 @@ def should_show_wordmark(stream: TextIO | None = None) -> bool:
 def wordmark(*, color: bool | None = None) -> str:
     """The compact one-line wordmark, e.g.::
 
-        Agent_Sudo v0.5.4 · Authorization · Delegation · Provenance · Audit
+        Agent_Sudo vX.Y.Z · Authorization · Delegation · Provenance · Audit
 
     ``color`` forces styling on/off; when None, styling is applied unless
     NO_COLOR is set.

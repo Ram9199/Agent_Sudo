@@ -5,12 +5,18 @@ import json
 import re
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 from agent_sudo.approvals import AutoDenyApprovalProvider
 from agent_sudo.audit import AuditLogger
-from agent_sudo.gateway import PermissionGateway, main
+from agent_sudo.gateway import (
+    PermissionGateway,
+    RequestInputError,
+    load_requests,
+    load_tool_call,
+    main,
+)
 from agent_sudo.models import ActionRequest, Classification, Decision, TrustLevel
 from agent_sudo.policy import load_default_policy
 
@@ -181,6 +187,43 @@ class GatewayTests(unittest.TestCase):
         match = re.search(r"Logs written to: (\S+)", output)
         self.assertIsNotNone(match)
         self.assertTrue(Path(match.group(1)).exists())
+
+
+class RequestInputErrorTests(unittest.TestCase):
+    """#69: bad input must produce a friendly error, not a raw traceback."""
+
+    def test_check_missing_file_exits_2_with_friendly_message(self) -> None:
+        err = io.StringIO()
+        with redirect_stderr(err), self.assertRaises(SystemExit) as cm:
+            main(["check", "delete everything"])
+        self.assertEqual(cm.exception.code, 2)
+        message = err.getvalue()
+        self.assertIn("request file not found", message)
+        self.assertIn("Example request file", message)
+        self.assertNotIn("Traceback", message)
+
+    def test_tool_call_invalid_json_exits_2_with_friendly_message(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bad = Path(tmpdir) / "bad.json"
+            bad.write_text("not json{", encoding="utf-8")
+            err = io.StringIO()
+            with redirect_stderr(err), self.assertRaises(SystemExit) as cm:
+                main(["codex-check", str(bad)])
+        self.assertEqual(cm.exception.code, 2)
+        message = err.getvalue()
+        self.assertIn("not valid JSON", message)
+        self.assertNotIn("Traceback", message)
+
+    def test_load_requests_raises_request_input_error_on_missing_file(self) -> None:
+        with self.assertRaises(RequestInputError):
+            load_requests(Path("/no/such/request.json"))
+
+    def test_load_tool_call_raises_request_input_error_on_bad_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bad = Path(tmpdir) / "bad.json"
+            bad.write_text("{not json", encoding="utf-8")
+            with self.assertRaises(RequestInputError):
+                load_tool_call(bad)
 
 
 if __name__ == "__main__":

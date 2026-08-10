@@ -68,14 +68,23 @@ SETUP_GUIDES = {
         "Remove or restrict direct shell, browser, email, and file-write tools where possible.",
         "Register an agent-sudo wrapper for dangerous tool calls.",
         "Route native tool dictionaries through agent-sudo hermes-check before enabling execution.",
-        "Verify with: agent-sudo hermes-check examples/hermes_tool_call.json",
+        "Verify with a self-contained call (no repo files needed):",
+        '  printf \'%s\' \'{"actor":"hermes","source":"user","tool_name":"terminal",'
+        '"operation":"run","arguments":{"command":"echo hello"},'
+        '"summary":"demo"}\' > /tmp/agent-sudo-hermes.json && '
+        "agent-sudo hermes-check /tmp/agent-sudo-hermes.json",
     ],
     "openclaw": [
         "Configure the runtime to call an agent-sudo wrapper before tools execute.",
         "Restrict direct browser, shell, and filesystem tools where possible.",
         "Route native tool dictionaries through the OpenClaw adapter.",
         "Use scoped delegations instead of broad approval.",
-        "Verify with: agent-sudo generic-check examples/mcp_tool_call.json",
+        "Verify with a self-contained call (no repo files needed):",
+        '  printf \'%s\' \'{"actor":"agent","agent_type":"generic",'
+        '"source":"user","source_trust":"USER_DIRECT","tool":"unknown_tool",'
+        '"action":"inspect","target":"/tmp","payload_summary":"demo"}'
+        "' > /tmp/agent-sudo-generic.json && "
+        "agent-sudo generic-check /tmp/agent-sudo-generic.json",
     ],
 }
 

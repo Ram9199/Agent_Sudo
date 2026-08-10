@@ -7,6 +7,7 @@ from typing import Callable
 
 from agent_sudo.models import ApprovalRequest, ApprovalStatus
 from agent_sudo.approvals import CONFIG_PATH, ApprovalProvider
+from agent_sudo.run_context import format_stamp
 from agent_sudo.pending_approvals import (
     PENDING_APPROVALS_PATH,
     PendingApprovalStore,
@@ -115,6 +116,9 @@ def run_approval_helper(
                         print(f"  Action:    {app.action_request.action}")
                         print(f"  Actor:     {app.action_request.actor}")
                         print(f"  Target:    {safe_target}")
+                        stamp = format_stamp(app.run_context)
+                        if stamp:
+                            print(f"  From:      {stamp}")
                         print(f"  Expires in ~{rem}s — approve before then.")
                         print()
                 else:
