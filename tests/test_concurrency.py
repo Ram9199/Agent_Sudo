@@ -10,9 +10,9 @@ These exercise the advisory-lock + atomic-write changes in
 5. Corrupt/torn audit tail -> explicit error, no false-valid chain.
 6. Backward-compatible sequential one-use flow (allow once, then deny).
 
-Threads (not processes) are sufficient: ``flock`` contends across separate
-open file descriptions even within one process, which is exactly what both the
-race and the lock-timeout test rely on.
+Threads (not processes) are sufficient: the lock helper serializes separate
+file descriptions on POSIX and adds a process-local mutex on Windows. This is
+exactly what both the race and lock-timeout tests rely on.
 """
 
 from __future__ import annotations
