@@ -56,8 +56,8 @@ class AuditLogger:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         # Read last hash -> link -> append must be one atomic step, otherwise two
         # concurrent appends read the same previous_hash and fork the chain. The
-        # lock (and a torn/corrupt tail raising in _last_entry_hash) keep us
-        # fail-closed: on failure we raise rather than write an unchained row.
+        # lock (and full existing-chain verification in _last_entry_hash) keep
+        # us fail-closed: on failure we raise rather than extend bad evidence.
         with file_lock(self._lock_path, self.lock_timeout):
             previous_hash = _last_entry_hash(self.path)
             entry["previous_hash"] = previous_hash
@@ -388,16 +388,35 @@ GENESIS_HASH = "0" * 64
 
 
 def _last_entry_hash(path: Path) -> str:
+    """Return the final hash only when every existing entry verifies.
+
+    Appending after a malformed or tampered entry would make the new record
+    look correctly linked while preserving an invalid audit trail. Verify each
+    existing link and digest before using the final hash as the next entry's
+    predecessor, so writers fail closed until an operator investigates.
+    """
     if not path.exists():
         return GENESIS_HASH
     last_hash = GENESIS_HASH
     with path.open("r", encoding="utf-8") as handle:
-        for line in handle:
+        for line_number, line in enumerate(handle, start=1):
             if not line.strip():
                 continue
             entry = json.loads(line)
+            if not isinstance(entry, dict):
+                raise ValueError(
+                    f"existing audit log line {line_number} is not a JSON object"
+                )
+            previous_hash = entry.get("previous_hash")
+            if previous_hash != last_hash:
+                raise ValueError(
+                    f"existing audit log line {line_number} has a previous_hash mismatch"
+                )
             value = entry.get("entry_hash")
-            if not isinstance(value, str):
-                raise ValueError("existing audit log contains entry without entry_hash")
+            expected_hash = compute_entry_hash(last_hash, entry)
+            if value != expected_hash:
+                raise ValueError(
+                    f"existing audit log line {line_number} has an entry_hash mismatch"
+                )
             last_hash = value
     return last_hash
